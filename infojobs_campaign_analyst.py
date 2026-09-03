@@ -1,220 +1,697 @@
-
 import pandas as pd
+import streamlit as st
 
-def load_data(file_path: str) -> pd.DataFrame:
+
+# ---------------------------------------------------------
+# CONFIGURACIÓN DE LA APP
+# ---------------------------------------------------------
+
+st.set_page_config(
+    page_title="Analista de Campañas",
+    page_icon="📊",
+    layout="wide"
+)
+
+
+# ---------------------------------------------------------
+# CARGA DE DATOS
+# ---------------------------------------------------------
+
+def load_data(uploaded_file) -> pd.DataFrame:
     """
-    Load campaign data from an Excel or CSV file.
-    Expected columns (case-insensitive):
-      - 'Line item' or 'Campaign'
-      - 'Imps' or 'Impressions'
-      - 'Clicks'
-      - 'Leads' or 'Applications'
-      - 'Total Cost' or 'Cost'
-      - Optional: 'CTR', 'CVR', 'CPA'
+    Load campaign data from an uploaded Excel or CSV file.
     """
-    if file_path.lower().endswith(".csv"):
-        df = pd.read_csv(file_path)
+
+    filename = uploaded_file.name.lower()
+
+    if filename.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
     else:
-        df = pd.read_excel(file_path)
+        df = pd.read_excel(uploaded_file)
+
     return df
 
+
+# ---------------------------------------------------------
+# NORMALIZACIÓN DE COLUMNAS
+# ---------------------------------------------------------
 
 def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Try to standardise column names to:
-      - 'campaign'
-      - 'imps'
-      - 'clicks'
-      - 'leads'
-      - 'cost'
-      - 'ctr'
-      - 'cvr'
-      - 'cpa'
-    """
-    col_map = {}
-    for col in df.columns:
-        low = col.strip().lower()
-        if 'line item' in low or 'campaign' in low or 'puesto' in low:
-            col_map[col] = 'campaign'
-        elif 'imp' in low:
-            col_map[col] = 'imps'
-        elif 'click' in low:
-            col_map[col] = 'clicks'
-        elif 'lead' in low or 'candid' in low or 'application' in low:
-            col_map[col] = 'leads'
-        elif 'total cost' in low or (('cost' in low or 'gasto' in low) and 'total' in low):
-            col_map[col] = 'cost'
-        elif low == 'cost' or low == 'costo':
-            col_map[col] = 'cost'
-        elif low == 'ctr':
-            col_map[col] = 'ctr'
-        elif low == 'cvr':
-            col_map[col] = 'cvr'
-        elif low == 'cpa':
-            col_map[col] = 'cpa'
-    df = df.rename(columns=col_map)
-    return df
+    Standardise common campaign column names to:
 
+    campaign
+    imps
+    clicks
+    leads
+    cost
+    ctr
+    cvr
+    cpa
+    """
+
+    col_map = {}
+
+    for col in df.columns:
+
+        low = str(col).strip().lower()
+
+        if "line item" in low or "campaign" in low or "puesto" in low:
+            col_map[col] = "campaign"
+
+        elif "imp" in low:
+            col_map[col] = "imps"
+
+        elif "click" in low:
+            col_map[col] = "clicks"
+
+        elif (
+            "lead" in low
+            or "candid" in low
+            or "application" in low
+        ):
+            col_map[col] = "leads"
+
+        elif (
+            "total cost" in low
+            or "total gasto" in low
+            or low in ["cost", "costo", "gasto"]
+        ):
+            col_map[col] = "cost"
+
+        elif low == "ctr":
+            col_map[col] = "ctr"
+
+        elif low == "cvr":
+            col_map[col] = "cvr"
+
+        elif low == "cpa":
+            col_map[col] = "cpa"
+
+    return df.rename(columns=col_map)
+
+
+# ---------------------------------------------------------
+# CÁLCULO DE MÉTRICAS
+# ---------------------------------------------------------
 
 def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Compute CTR, CVR and CPA if not present.
-    CTR  = clicks / imps
-    CVR  = leads / clicks
-    CPA  = cost / leads
-    """
-    if 'imps' not in df or 'clicks' not in df or 'leads' not in df:
-        raise ValueError("Missing one of required columns: 'imps', 'clicks', 'leads'")
 
-    # Avoid division by zero using where + fillna
-    if 'ctr' not in df:
-        df['ctr'] = (df['clicks'] / df['imps']).where(df['imps'] > 0, 0)
+    required_columns = ["imps", "clicks", "leads"]
 
-    if 'cvr' not in df:
-        df['cvr'] = (df['leads'] / df['clicks']).where(df['clicks'] > 0, 0)
+    missing = [
+        col for col in required_columns
+        if col not in df.columns
+    ]
 
-    if 'cost' in df and 'cpa' not in df:
-        df['cpa'] = (df['cost'] / df['leads']).where(df['leads'] > 0, None)
+    if missing:
+        raise ValueError(
+            f"Faltan columnas necesarias: {', '.join(missing)}"
+        )
+
+    # Convertimos las métricas a valores numéricos
+    numeric_columns = [
+        "imps",
+        "clicks",
+        "leads",
+        "cost",
+        "ctr",
+        "cvr",
+        "cpa"
+    ]
+
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce"
+            )
+
+    # CTR
+    if "ctr" not in df.columns:
+        df["ctr"] = (
+            df["clicks"] / df["imps"]
+        ).where(
+            df["imps"] > 0,
+            0
+        )
+
+    # CVR
+    if "cvr" not in df.columns:
+        df["cvr"] = (
+            df["leads"] / df["clicks"]
+        ).where(
+            df["clicks"] > 0,
+            0
+        )
+
+    # CPA
+    if "cost" in df.columns and "cpa" not in df.columns:
+        df["cpa"] = (
+            df["cost"] / df["leads"]
+        ).where(
+            df["leads"] > 0
+        )
 
     return df
 
 
-def print_overall_summary(df: pd.DataFrame) -> None:
-    print("\n===== RESUMEN GENERAL =====")
-    valid = df.copy()
-    # remove rows with NaN CPA when computing mean CPA
-    mean_ctr = valid['ctr'].mean()
-    mean_cvr = valid['cvr'].mean()
-    mean_cpa = valid['cpa'].dropna().mean() if 'cpa' in valid else None
+# ---------------------------------------------------------
+# DIAGNÓSTICO
+# ---------------------------------------------------------
 
-    print(f"CTR medio: {mean_ctr:.4%}")
-    print(f"CVR medio: {mean_cvr:.2%}")
-    if mean_cpa is not None:
-        print(f"CPA medio: {mean_cpa:.2f} €")
+def diagnose_row(
+    row,
+    mean_ctr,
+    mean_cvr,
+    mean_cpa=None
+):
 
-    # Rango orientativo
-    print("\nRangos de referencia orientativos:")
-    print("- CTR bueno: > 1%")
-    print("- CVR bueno: 10% – 20%")
-    print("- CPA bueno: < 10–15 € (depende del perfil)")
-
-
-def show_top_bottom(df: pd.DataFrame, metric: str, top_n: int = 3) -> None:
-    print(f"\n===== TOP y BOTTOM por {metric.upper()} =====")
-    if metric not in df:
-        print(f"No se encuentra la métrica '{metric}' en el dataframe.")
-        return
-
-    # Para CPA, lo mejor es más bajo
-    if metric == 'cpa':
-        best = df.nsmallest(top_n, metric)
-        worst = df.nlargest(top_n, metric)
-    else:
-        best = df.nlargest(top_n, metric)
-        worst = df.nsmallest(top_n, metric)
-
-    print("\nMejores campañas:")
-    for _, row in best.iterrows():
-        print(f"- {row.get('campaign', 'N/A')} | {metric.upper()}: {row[metric]:.4f}")
-
-    print("\Peores campañas:")
-    for _, row in worst.iterrows():
-        value = row[metric]
-        if isinstance(value, float):
-            print(f"- {row.get('campaign', 'N/A')} | {metric.upper()}: {value:.4f}")
-        else:
-            print(f"- {row.get('campaign', 'N/A')} | {metric.upper()}: {value}")
-
-
-def diagnose_row(row, mean_ctr, mean_cvr, mean_cpa):
-    """
-    Simple heuristic diagnosis for a single campaign row.
-    """
     issues = []
 
-    ctr = row['ctr']
-    cvr = row['cvr']
-    cpa = row['cpa']
+    ctr = row.get("ctr", 0)
+    cvr = row.get("cvr", 0)
+    cpa = row.get("cpa", None)
 
-    # CTR diagnosis
-    if ctr < mean_ctr * 0.6:
-        issues.append("CTR muy bajo → poca atracción en el listado (título/beneficios mejorables).")
+    if pd.notna(ctr) and ctr < mean_ctr * 0.6:
+        issues.append(
+            "CTR muy bajo → poca atracción en el listado. "
+            "Puede ser necesario revisar título, copy o beneficios."
+        )
 
-    # CVR diagnosis
-    if cvr < mean_cvr * 0.6:
-        issues.append("CVR bajo → muchos clics pero pocas candidaturas (oferta poco atractiva o requisitos mal planteados).")
+    if pd.notna(cvr) and cvr < mean_cvr * 0.6:
+        issues.append(
+            "CVR bajo → muchos clics pero pocas candidaturas. "
+            "Puede existir fricción entre la oferta y las expectativas del usuario."
+        )
 
-    # CPA diagnosis (only if not NaN)
-    if pd.notna(cpa) and cpa > mean_cpa * 1.5:
-        issues.append("CPA muy alto → coste por candidatura poco eficiente, revisar inversión o segmentación.")
+    if (
+        mean_cpa is not None
+        and pd.notna(mean_cpa)
+        and pd.notna(cpa)
+        and cpa > mean_cpa * 1.5
+    ):
+        issues.append(
+            "CPA muy alto → coste por candidatura poco eficiente. "
+            "Conviene revisar inversión, segmentación o rendimiento del funnel."
+        )
 
     if not issues:
-        issues.append("Rendimiento equilibrado o por encima de la media.")
+        issues.append(
+            "Rendimiento equilibrado o por encima de la media."
+        )
 
     return issues
 
 
-def print_detailed_recommendations(df: pd.DataFrame) -> None:
-    print("\n===== DIAGNÓSTICO Y RECOMENDACIONES =====")
+# ---------------------------------------------------------
+# RECOMENDACIONES
+# ---------------------------------------------------------
 
-    mean_ctr = df['ctr'].mean()
-    mean_cvr = df['cvr'].mean()
-    mean_cpa = df['cpa'].dropna().mean() if 'cpa' in df else None
+def generate_actions(issues):
 
-    for _, row in df.iterrows():
-        campaign = row.get('campaign', 'N/A')
-        ctr = row['ctr']
-        cvr = row['cvr']
-        cpa = row['cpa']
+    actions = []
 
-        print("\n---")
-        print(f"Campaña: {campaign}")
-        print(f"CTR: {ctr:.4%} | CVR: {cvr:.2%} | CPA: {cpa if pd.notna(cpa) else 'N/A'} €")
+    joined = " ".join(issues)
 
-        issues = diagnose_row(row, mean_ctr, mean_cvr, mean_cpa)
-        for issue in issues:
-            print(f"• {issue}")
+    if "CTR muy bajo" in joined:
 
-        # Suggested actions based on issues
-        print("Acciones sugeridas:")
-        if "CTR muy bajo" in " ".join(issues):
-            print("  - Probar nuevo título más concreto y con beneficio clave.")
-            print("  - Añadir salario y beneficios claros en las primeras líneas.")
-        if "CVR bajo" in " ".join(issues):
-            print("  - Revisar requisitos (separar imprescindibles de deseables).")
-            print("  - Asegurarse de que la oferta es coherente con el salario/beneficios.")
-        if "CPA muy alto" in " ".join(issues):
-            print("  - Reducir presupuesto temporalmente y optimizar antes de escalar.")
-            print("  - Considerar pausar si tras ajustes sigue con CPA muy superior a la media.")
-        if "Rendimiento equilibrado" in " ".join(issues):
-            print("  - Candidata para escalar presupuesto o replicar estructura en otras campañas.")
+        actions.append(
+            "Probar un nuevo título más concreto y atractivo."
+        )
 
-        # Simple A/B test suggestions
-        print("Ideas de test A/B:")
-        print("  - Versión A: título racional (salario/contrato). Versión B: título emocional (proyecto/equipo).")
-        print("  - Destacar beneficios arriba vs. abajo en la descripción.")
-        print("  - Ajustar tono del copy: más directo vs. más descriptivo.")
+        actions.append(
+            "Destacar salario, beneficios o propuesta de valor en las primeras líneas."
+        )
 
+    if "CVR bajo" in joined:
+
+        actions.append(
+            "Revisar requisitos y separar claramente imprescindibles de deseables."
+        )
+
+        actions.append(
+            "Comprobar que salario, beneficios y condiciones son competitivos."
+        )
+
+    if "CPA muy alto" in joined:
+
+        actions.append(
+            "Reducir temporalmente la inversión mientras se optimiza la campaña."
+        )
+
+        actions.append(
+            "Revisar segmentación, fuentes de tráfico y distribución del presupuesto."
+        )
+
+    if "Rendimiento equilibrado" in joined:
+
+        actions.append(
+            "Valorar incrementar presupuesto o replicar esta estructura en otras campañas."
+        )
+
+    return actions
+
+
+# ---------------------------------------------------------
+# INTERFAZ STREAMLIT
+# ---------------------------------------------------------
 
 def main():
-    import argparse
 
-    parser = argparse.ArgumentParser(description="Analista de campañas InfoJobs (rule-based).")
-    parser.add_argument("file", help="Ruta al fichero Excel o CSV con los datos de campaña.")
-    args = parser.parse_args()
+    st.title("📊 Analista de Rendimiento de Campañas")
 
-    df = load_data(args.file)
-    df = normalise_columns(df)
-    df = compute_metrics(df)
+    st.write(
+        """
+        Sube un archivo Excel o CSV con los datos de campaña.
 
-    print_overall_summary(df)
-    show_top_bottom(df, 'ctr')
-    show_top_bottom(df, 'cvr')
-    if 'cpa' in df:
-        show_top_bottom(df, 'cpa')
+        La herramienta analizará automáticamente el rendimiento,
+        calculará los principales KPIs e identificará oportunidades
+        de optimización.
+        """
+    )
 
-    print_detailed_recommendations(df)
+    uploaded_file = st.file_uploader(
+        "Sube tu archivo de campaña",
+        type=["xlsx", "xls", "csv"]
+    )
 
+    if uploaded_file is None:
+
+        st.info(
+            "👆 Sube un archivo Excel o CSV para comenzar el análisis."
+        )
+
+        return
+
+    try:
+
+        # -------------------------------------------------
+        # PROCESAMIENTO
+        # -------------------------------------------------
+
+        df = load_data(uploaded_file)
+
+        df = normalise_columns(df)
+
+        df = compute_metrics(df)
+
+        st.success(
+            f"Archivo cargado correctamente: {uploaded_file.name}"
+        )
+
+
+        # -------------------------------------------------
+        # KPIs GENERALES
+        # -------------------------------------------------
+
+        st.header("📈 Resumen ejecutivo")
+
+        total_imps = df["imps"].sum()
+        total_clicks = df["clicks"].sum()
+        total_leads = df["leads"].sum()
+
+        overall_ctr = (
+            total_clicks / total_imps
+            if total_imps > 0
+            else 0
+        )
+
+        overall_cvr = (
+            total_leads / total_clicks
+            if total_clicks > 0
+            else 0
+        )
+
+        total_cost = (
+            df["cost"].sum()
+            if "cost" in df.columns
+            else None
+        )
+
+        overall_cpa = (
+            total_cost / total_leads
+            if total_cost is not None
+            and total_leads > 0
+            else None
+        )
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        col1.metric(
+            "Impresiones",
+            f"{total_imps:,.0f}"
+        )
+
+        col2.metric(
+            "Clicks",
+            f"{total_clicks:,.0f}"
+        )
+
+        col3.metric(
+            "CTR",
+            f"{overall_ctr:.2%}"
+        )
+
+        col4.metric(
+            "CVR",
+            f"{overall_cvr:.2%}"
+        )
+
+        col5, col6 = st.columns(2)
+
+        col5.metric(
+            "Candidaturas / Leads",
+            f"{total_leads:,.0f}"
+        )
+
+        if overall_cpa is not None:
+
+            col6.metric(
+                "CPA",
+                f"{overall_cpa:.2f} €"
+            )
+
+
+        # -------------------------------------------------
+        # TABLA
+        # -------------------------------------------------
+
+        st.header("📋 Datos de campaña")
+
+        display_df = df.copy()
+
+        if "ctr" in display_df.columns:
+            display_df["CTR"] = (
+                display_df["ctr"] * 100
+            ).round(2).astype(str) + "%"
+
+        if "cvr" in display_df.columns:
+            display_df["CVR"] = (
+                display_df["cvr"] * 100
+            ).round(2).astype(str) + "%"
+
+        if "cpa" in display_df.columns:
+            display_df["CPA"] = (
+                display_df["cpa"]
+                .round(2)
+            )
+
+        st.dataframe(
+            display_df,
+            use_container_width=True
+        )
+
+
+        # -------------------------------------------------
+        # TOP / BOTTOM CTR
+        # -------------------------------------------------
+
+        st.header("🏆 Mejores y peores campañas")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+
+            st.subheader("Top CTR")
+
+            top_ctr = df.nlargest(
+                3,
+                "ctr"
+            )
+
+            for _, row in top_ctr.iterrows():
+
+                campaign = row.get(
+                    "campaign",
+                    "Campaña"
+                )
+
+                st.write(
+                    f"**{campaign}** — {row['ctr']:.2%}"
+                )
+
+        with col2:
+
+            st.subheader("Bottom CTR")
+
+            bottom_ctr = df.nsmallest(
+                3,
+                "ctr"
+            )
+
+            for _, row in bottom_ctr.iterrows():
+
+                campaign = row.get(
+                    "campaign",
+                    "Campaña"
+                )
+
+                st.write(
+                    f"**{campaign}** — {row['ctr']:.2%}"
+                )
+
+
+        # -------------------------------------------------
+        # CVR
+        # -------------------------------------------------
+
+        col3, col4 = st.columns(2)
+
+        with col3:
+
+            st.subheader("Top CVR")
+
+            top_cvr = df.nlargest(
+                3,
+                "cvr"
+            )
+
+            for _, row in top_cvr.iterrows():
+
+                campaign = row.get(
+                    "campaign",
+                    "Campaña"
+                )
+
+                st.write(
+                    f"**{campaign}** — {row['cvr']:.2%}"
+                )
+
+        with col4:
+
+            st.subheader("Bottom CVR")
+
+            bottom_cvr = df.nsmallest(
+                3,
+                "cvr"
+            )
+
+            for _, row in bottom_cvr.iterrows():
+
+                campaign = row.get(
+                    "campaign",
+                    "Campaña"
+                )
+
+                st.write(
+                    f"**{campaign}** — {row['cvr']:.2%}"
+                )
+
+
+        # -------------------------------------------------
+        # CPA
+        # -------------------------------------------------
+
+        if "cpa" in df.columns:
+
+            st.subheader("💰 Eficiencia de CPA")
+
+            valid_cpa = df.dropna(
+                subset=["cpa"]
+            )
+
+            if not valid_cpa.empty:
+
+                col5, col6 = st.columns(2)
+
+                with col5:
+
+                    st.write("**Mejor CPA**")
+
+                    best_cpa = valid_cpa.nsmallest(
+                        3,
+                        "cpa"
+                    )
+
+                    for _, row in best_cpa.iterrows():
+
+                        st.write(
+                            f"**{row.get('campaign', 'Campaña')}** "
+                            f"— {row['cpa']:.2f} €"
+                        )
+
+                with col6:
+
+                    st.write("**Peor CPA**")
+
+                    worst_cpa = valid_cpa.nlargest(
+                        3,
+                        "cpa"
+                    )
+
+                    for _, row in worst_cpa.iterrows():
+
+                        st.write(
+                            f"**{row.get('campaign', 'Campaña')}** "
+                            f"— {row['cpa']:.2f} €"
+                        )
+
+
+        # -------------------------------------------------
+        # DIAGNÓSTICO
+        # -------------------------------------------------
+
+        st.header("🧠 Diagnóstico y recomendaciones")
+
+        mean_ctr = df["ctr"].mean()
+        mean_cvr = df["cvr"].mean()
+
+        mean_cpa = (
+            df["cpa"].dropna().mean()
+            if "cpa" in df.columns
+            else None
+        )
+
+        for _, row in df.iterrows():
+
+            campaign = row.get(
+                "campaign",
+                "Campaña"
+            )
+
+            with st.expander(
+                f"📌 {campaign}"
+            ):
+
+                ctr = row.get(
+                    "ctr",
+                    0
+                )
+
+                cvr = row.get(
+                    "cvr",
+                    0
+                )
+
+                cpa = row.get(
+                    "cpa",
+                    None
+                )
+
+                col1, col2, col3 = st.columns(3)
+
+                col1.metric(
+                    "CTR",
+                    f"{ctr:.2%}"
+                )
+
+                col2.metric(
+                    "CVR",
+                    f"{cvr:.2%}"
+                )
+
+                if pd.notna(cpa):
+
+                    col3.metric(
+                        "CPA",
+                        f"{cpa:.2f} €"
+                    )
+
+                else:
+
+                    col3.metric(
+                        "CPA",
+                        "N/A"
+                    )
+
+                issues = diagnose_row(
+                    row,
+                    mean_ctr,
+                    mean_cvr,
+                    mean_cpa
+                )
+
+                st.write("### Diagnóstico")
+
+                for issue in issues:
+
+                    st.write(
+                        f"• {issue}"
+                    )
+
+                actions = generate_actions(
+                    issues
+                )
+
+                st.write("### Acciones sugeridas")
+
+                for action in actions:
+
+                    st.write(
+                        f"• {action}"
+                    )
+
+                st.write("### Ideas de test A/B")
+
+                st.write(
+                    "• Título racional basado en salario/contrato vs. "
+                    "título emocional basado en proyecto/equipo."
+                )
+
+                st.write(
+                    "• Beneficios destacados al principio vs. "
+                    "al final de la descripción."
+                )
+
+                st.write(
+                    "• Copy directo y conciso vs. "
+                    "copy más descriptivo."
+                )
+
+
+        # -------------------------------------------------
+        # DESCARGA
+        # -------------------------------------------------
+
+        st.header("📥 Exportar resultados")
+
+        csv = df.to_csv(
+            index=False
+        ).encode(
+            "utf-8"
+        )
+
+        st.download_button(
+            label="Descargar análisis en CSV",
+            data=csv,
+            file_name="campaign_analysis.csv",
+            mime="text/csv"
+        )
+
+
+    except Exception as e:
+
+        st.error(
+            "Se ha producido un error al procesar el archivo."
+        )
+
+        st.exception(e)
+
+
+# ---------------------------------------------------------
+# EJECUCIÓN
+# ---------------------------------------------------------
 
 if __name__ == "__main__":
     main()
