@@ -891,7 +891,7 @@ def generate_executive_pdf(
     )
 
     # FPDF devuelve bytearray en algunas versiones
-    return bytes(pdf.output())
+    return pdf.output(dest="S").encode("latin-1")
 
 
 # =========================================================
