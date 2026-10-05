@@ -1222,37 +1222,54 @@ def main():
             st.subheader("Distribución de impresiones por perfil")
 
             pie_chart = (
-                alt.Chart(profile_data)
-                .mark_arc(innerRadius=55, outerRadius=120)
-                .encode(
-                    theta=alt.Theta(
-                        field="imps",
-                        type="quantitative"
-                    ),
-                    color=alt.Color(
-                        field="profile",
-                        type="nominal",
-                        title="Perfil"
-                    ),
-                    tooltip=[
-                        alt.Tooltip(
-                            "profile:N",
-                            title="Perfil"
-                        ),
-                        alt.Tooltip(
-                            "imps:Q",
-                            title="Impresiones",
-                            format=","
-                        ),
-                        alt.Tooltip(
-                            "share:Q",
-                            title="% del total",
-                            format=".1%"
-                        )
-                    ]
-                )
-                .properties(height=380)
+    alt.Chart(profile_data)
+    .mark_arc(
+        innerRadius=65,
+        outerRadius=125
+    )
+    .encode(
+        theta=alt.Theta(
+            field="imps",
+            type="quantitative"
+        ),
+        color=alt.Color(
+            field="profile",
+            type="nominal",
+            title="Perfil",
+            legend=alt.Legend(
+                labelColor="#E5E7EB",
+                titleColor="#FFFFFF",
+                labelFontSize=13,
+                titleFontSize=14
             )
+        ),
+        tooltip=[
+            alt.Tooltip(
+                "profile:N",
+                title="Perfil"
+            ),
+            alt.Tooltip(
+                "imps:Q",
+                title="Impresiones",
+                format=","
+            ),
+            alt.Tooltip(
+                "share:Q",
+                title="% del total",
+                format=".1%"
+            )
+        ]
+    )
+    .properties(
+        height=380
+    )
+    .configure_view(
+        strokeWidth=0
+    )
+    .configure(
+        background="transparent"
+    )
+)
 
             st.altair_chart(
                 pie_chart,
