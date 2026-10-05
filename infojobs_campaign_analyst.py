@@ -126,161 +126,167 @@ footer {
 
 
 # =========================================================
-# CARGA DE DATOS
+# CARGA, NORMALIZACIÓN Y MÉTRICAS
 # =========================================================
 
-def load_data(uploaded_file) -> pd.DataFrame:
-    """
-    Carga datos de campaña desde Excel o CSV.
-    """
+def _clean_name(value):
+    return str(value).strip().lower().replace("_", " ")
 
+
+def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza nombres y fusiona duplicados de forma segura."""
+    df = df.copy()
+    mapped = []
+
+    for col in df.columns:
+        low = _clean_name(col)
+
+        if "advertiser" in low or "anunciante" in low:
+            target = "advertiser"
+        elif "salesrep" in low or "sales rep" in low:
+            target = "salesrep"
+        elif "profile" in low or "perfil" in low or "segmentación" in low or "segmentacion" in low:
+            target = "profile"
+        elif low in ["date", "fecha", "day", "día", "dia"] or "report date" in low:
+            target = "date"
+        elif "flight start" in low or "start date" in low or "fecha inicio" in low:
+            target = "flight_start_date"
+        elif "flight end" in low or "end date" in low or "fecha fin" in low:
+            target = "flight_end_date"
+        elif "line item" in low or low == "campaign" or "campaña" in low or "adops" in low:
+            target = "campaign"
+        elif low in ["imps", "imp", "impressions", "impresiones"] or "impression" in low:
+            target = "imps"
+        elif "click" in low or "clic" in low:
+            target = "clicks"
+        elif "lead" in low or "candid" in low or "application" in low:
+            target = "leads"
+        elif "revenue" in low or "ingreso" in low:
+            target = "revenue"
+        elif "total cost" in low or "total gasto" in low or low in ["cost", "costo", "gasto", "coste"]:
+            target = "cost"
+        elif low == "ctr":
+            target = "ctr"
+        elif low == "cvr":
+            target = "cvr"
+        elif low == "cpa":
+            target = "cpa"
+        else:
+            target = col
+
+        mapped.append(target)
+
+    df.columns = mapped
+
+    # Evita el error "Duplicate column names found".
+    if df.columns.duplicated().any():
+        result = pd.DataFrame(index=df.index)
+        for name in pd.unique(df.columns):
+            same = df.loc[:, df.columns == name]
+            result[name] = same.iloc[:, 0] if same.shape[1] == 1 else same.bfill(axis=1).iloc[:, 0]
+        df = result
+
+    return df
+
+
+def _to_number(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_numeric_dtype(series):
+        return pd.to_numeric(series, errors="coerce")
+
+    s = series.astype(str).str.strip()
+    s = s.str.replace("€", "", regex=False).str.replace("%", "", regex=False)
+    s = s.str.replace("\u00a0", "", regex=False).str.replace(" ", "", regex=False)
+
+    if s.str.contains(",", regex=False, na=False).any():
+        s = s.str.replace(".", "", regex=False).str.replace(",", ".", regex=False)
+
+    return pd.to_numeric(s, errors="coerce")
+
+
+def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    missing = [c for c in ["imps", "clicks", "leads"] if c not in df.columns]
+    if missing:
+        raise ValueError("Faltan columnas necesarias: " + ", ".join(missing))
+
+    for col in ["imps", "clicks", "leads", "cost", "revenue", "ctr", "cvr", "cpa"]:
+        if col in df.columns:
+            df[col] = _to_number(df[col])
+
+    # Recalcular siempre desde métricas base para evitar problemas de formato %.
+    df["ctr"] = (df["clicks"] / df["imps"]).where(df["imps"] > 0, 0)
+    df["cvr"] = (df["leads"] / df["clicks"]).where(df["clicks"] > 0, 0)
+
+    if "cost" in df.columns:
+        df["cpa"] = (df["cost"] / df["leads"]).where(df["leads"] > 0)
+
+    return df
+
+
+def load_data(uploaded_file):
+    """
+    Devuelve dos DataFrames:
+      1. campañas agregadas
+      2. datos diarios, si existen
+
+    En Excel reconoce automáticamente hojas como 'Campañas' y 'Datos_Diarios'.
+    """
     filename = uploaded_file.name.lower()
 
     if filename.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
+        raw = normalise_columns(pd.read_csv(uploaded_file))
+        campaign_df = compute_metrics(raw)
+        daily_df = campaign_df.copy() if "date" in campaign_df.columns else None
+        return campaign_df, daily_df
 
-    return df
+    uploaded_file.seek(0)
+    sheets = pd.read_excel(uploaded_file, sheet_name=None)
 
+    if not sheets:
+        raise ValueError("El Excel no contiene hojas legibles.")
 
-# =========================================================
-# NORMALIZACIÓN DE COLUMNAS
-# =========================================================
+    sheets = {name: normalise_columns(data) for name, data in sheets.items()}
 
-def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Intenta estandarizar nombres habituales de columnas a:
+    campaign_df = None
+    campaign_names = {"campañas", "campanas", "campaigns", "campaign", "resumen", "summary"}
 
-    campaign
-    imps
-    clicks
-    leads
-    cost
-    ctr
-    cvr
-    cpa
-    advertiser
-    profile
-    date
-    """
+    for name, data in sheets.items():
+        if _clean_name(name) in campaign_names:
+            campaign_df = data.copy()
+            break
 
-    col_map = {}
+    if campaign_df is None:
+        for data in sheets.values():
+            if {"imps", "clicks", "leads"}.issubset(data.columns) and "date" not in data.columns:
+                campaign_df = data.copy()
+                break
 
-    for col in df.columns:
-        low = col.strip().lower()
+    if campaign_df is None:
+        campaign_df = next(iter(sheets.values())).copy()
 
-        if 'advertiser' in low or 'anunciante' in low:
-            col_map[col] = 'advertiser'
+    campaign_df = compute_metrics(campaign_df)
 
-        elif 'profile' in low or 'perfil' in low:
-            col_map[col] = 'profile'
+    daily_df = None
+    daily_names = {"datos diarios", "datos diario", "datos daily", "daily", "daily data", "diario", "por día", "por dia"}
 
-        elif low in ['date', 'fecha', 'day', 'día', 'dia'] or 'report date' in low:
-            col_map[col] = 'date'
+    for name, data in sheets.items():
+        if _clean_name(name) in daily_names and "date" in data.columns:
+            daily_df = data.copy()
+            break
 
-        elif 'line item' in low or 'campaign' in low or 'puesto' in low or 'adops' in low:
-            col_map[col] = 'campaign'
+    if daily_df is None:
+        for data in sheets.values():
+            if "date" in data.columns and {"imps", "clicks"}.issubset(data.columns):
+                daily_df = data.copy()
+                break
 
-        elif "imp" in low:
-            col_map[col] = "imps"
+    if daily_df is not None:
+        if "leads" not in daily_df.columns:
+            daily_df["leads"] = 0
+        daily_df = compute_metrics(daily_df)
 
-        elif "click" in low:
-            col_map[col] = "clicks"
-
-        elif (
-            "lead" in low
-            or "candid" in low
-            or "application" in low
-        ):
-            col_map[col] = "leads"
-
-        elif (
-            "total cost" in low
-            or "total gasto" in low
-            or low in ["cost", "costo", "gasto"]
-        ):
-            col_map[col] = "cost"
-
-        elif low == "ctr":
-            col_map[col] = "ctr"
-
-        elif low == "cvr":
-            col_map[col] = "cvr"
-
-        elif low == "cpa":
-            col_map[col] = "cpa"
-
-    return df.rename(columns=col_map)
-
-
-# =========================================================
-# CÁLCULO DE MÉTRICAS
-# =========================================================
-
-def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
-
-    required_columns = ["imps", "clicks", "leads"]
-
-    missing = [
-        col for col in required_columns
-        if col not in df.columns
-    ]
-
-    if missing:
-        raise ValueError(
-            f"Faltan columnas necesarias: {', '.join(missing)}"
-        )
-
-    numeric_columns = [
-        "imps",
-        "clicks",
-        "leads",
-        "cost",
-        "ctr",
-        "cvr",
-        "cpa"
-    ]
-
-    for col in numeric_columns:
-
-        if col in df.columns:
-
-            df[col] = pd.to_numeric(
-                df[col],
-                errors="coerce"
-            )
-
-    # CTR
-    if "ctr" not in df.columns:
-
-        df["ctr"] = (
-            df["clicks"] / df["imps"]
-        ).where(
-            df["imps"] > 0,
-            0
-        )
-
-    # CVR
-    if "cvr" not in df.columns:
-
-        df["cvr"] = (
-            df["leads"] / df["clicks"]
-        ).where(
-            df["clicks"] > 0,
-            0
-        )
-
-    # CPA
-    if "cost" in df.columns and "cpa" not in df.columns:
-
-        df["cpa"] = (
-            df["cost"] / df["leads"]
-        ).where(
-            df["leads"] > 0
-        )
-
-    return df
+    return campaign_df, daily_df
 
 
 # =========================================================
@@ -1059,17 +1065,8 @@ def main():
         # PROCESAMIENTO
         # =================================================
 
-        df = load_data(
-            uploaded_file
-        )
-
-        df = normalise_columns(
-            df
-        )
-
-        df = compute_metrics(
-            df
-        )
+        df, daily_df = load_data(uploaded_file)
+        daily_filtered = daily_df.copy() if daily_df is not None else None
 
         # =================================================
         # FILTROS
@@ -1095,6 +1092,11 @@ def main():
                 df = df[
                     df["advertiser"].astype(str) == advertiser_selected
                 ].copy()
+
+                if daily_filtered is not None and "advertiser" in daily_filtered.columns:
+                    daily_filtered = daily_filtered[
+                        daily_filtered["advertiser"].astype(str) == advertiser_selected
+                    ].copy()
 
         else:
             st.caption(
@@ -1273,7 +1275,8 @@ def main():
 
             st.altair_chart(
                 pie_chart,
-                use_container_width=True
+                use_container_width=True,
+                theme=None
             )
 
         else:
@@ -1287,9 +1290,9 @@ def main():
         # IMPRESIONES Y CTR POR DÍA
         # -------------------------------------------------
 
-        if "date" in df.columns:
+        if daily_filtered is not None and "date" in daily_filtered.columns:
 
-            daily_source = df.copy()
+            daily_source = daily_filtered.copy()
 
             daily_source["date"] = pd.to_datetime(
                 daily_source["date"],
@@ -1402,8 +1405,18 @@ def main():
                 )
 
                 st.altair_chart(
-                    combined_chart,
-                    use_container_width=True
+                    combined_chart.configure(
+                        background="transparent"
+                    ).configure_view(
+                        strokeWidth=0
+                    ).configure_axis(
+                        labelColor="#CBD5E1",
+                        titleColor="#F8FAFC",
+                        gridColor="#263247",
+                        domainColor="#475569"
+                    ),
+                    use_container_width=True,
+                    theme=None
                 )
 
             else:
@@ -1430,27 +1443,27 @@ def main():
 
         display_df = df.copy()
 
+        # Formateamos las columnas existentes en lugar de crear CTR/CVR/CPA
+        # adicionales, evitando nombres duplicados.
         if "ctr" in display_df.columns:
-
-            display_df["CTR"] = (
-                display_df["ctr"] * 100
-            ).round(2).astype(str) + "%"
+            display_df["ctr"] = display_df["ctr"].map(
+                lambda x: f"{x:.2%}" if pd.notna(x) else ""
+            )
 
         if "cvr" in display_df.columns:
-
-            display_df["CVR"] = (
-                display_df["cvr"] * 100
-            ).round(2).astype(str) + "%"
+            display_df["cvr"] = display_df["cvr"].map(
+                lambda x: f"{x:.2%}" if pd.notna(x) else ""
+            )
 
         if "cpa" in display_df.columns:
-
-            display_df["CPA"] = (
-                display_df["cpa"].round(2)
+            display_df["cpa"] = display_df["cpa"].map(
+                lambda x: f"{x:.2f} €" if pd.notna(x) else ""
             )
 
         st.dataframe(
             display_df,
-            use_container_width=True
+            use_container_width=True,
+            hide_index=True
         )
 
         # =================================================
